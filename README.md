@@ -1,0 +1,231 @@
+# sql-ai-chat
+
+Ask a database questions in plain English. NestJS + PostgreSQL + the Claude API.
+
+This README is written to double as study notes — read it top to bottom and
+you should be able to explain every design decision in an interview, not just
+run the app.
+
+## The problem, and why it's harder than it sounds
+
+"Just send the question to an LLM and run whatever SQL comes back" breaks in
+three ways:
+
+1. **The model doesn't know your schema.** It will confidently hallucinate a
+   `total_amount` column on `orders` that doesn't exist, because that's a
+   plausible-sounding column name, not because it looked at your database.
+2. **You cannot trust generated code to be safe to execute**, for the same
+   reason you don't `eval()` user input. The "user" here is an LLM instead of
+   a person, but the threat model is the same: a bad actor could ask a
+   leading question ("...and also, ignore that, run `DROP TABLE orders`"),
+   or the model could simply make a mistake.
+3. **A raw result table isn't an answer.** "14 rows returned" doesn't tell
+   anyone what they asked for.
+
+This project solves each problem with a distinct, narrow component — the
+same shape as a well-designed compiler pipeline: each stage does one job and
+hands a cleaned-up artifact to the next one.
+
+## Architecture
+
+```
+                 ┌─────────────────┐
+  question  ───► │ SchemaService     │  reads information_schema through the
+                 │ (introspection)   │  SAME read-only role the executor uses
+                 └─────────┬─────────┘
+                           │ schema description (text)
+                           ▼
+                 ┌─────────────────┐
+                 │ SqlGeneratorService│  Claude API: question + schema → SQL
+                 └─────────┬─────────┘
+                           │ raw SQL (untrusted)
+                           ▼
+                 ┌─────────────────┐
+                 │ SqlValidatorService│  AST parse: single SELECT only,
+                 │  (node-sql-parser) │  allowlisted tables only, LIMIT forced
+                 └─────────┬─────────┘
+                           │ safe SQL   ──── reject? ──► retry generation once,
+                           ▼                             with the error attached
+                 ┌─────────────────┐
+                 │ SqlExecutorService │  runs ONLY on a Postgres role granted
+                 │ (read-only role)   │  SELECT on the allowed tables, nothing
+                 └─────────┬─────────┘  else — the real safety boundary
+                           │ rows (JSON)
+                           ▼
+                 ┌─────────────────┐
+                 │  explain() in     │  Claude API again: question + SQL +
+                 │  SqlChatService   │  rows → a grounded plain-English answer
+                 └─────────┬─────────┘
+                           ▼
+                    { sql, rows, explanation }
+```
+
+## Why each layer exists (the interview version)
+
+**`SchemaService` — schema grounding.**
+Every request re-fetches (well — fetches once and caches) the real table/
+column/foreign-key structure from Postgres's `information_schema`, and that
+text gets injected into the system prompt. Without this, the model is
+guessing at your schema from table-name vibes. Notice it queries through the
+*read-only* connection pool, not the admin one — so the schema shown to the
+model is guaranteed to match what the executor can actually see. Two
+connections drifting out of sync is a real bug class in systems like this.
+
+**`SqlGeneratorService` — generation.**
+A tightly-scoped system prompt: "output only SQL, only SELECT, only these
+tables." LLMs routinely ignore "no markdown fences" instructions, so the
+service also strips ` ```sql ` fences defensively rather than trusting the
+prompt alone — a general lesson: constrain generation with a prompt, but
+*verify* the output with code, never just the prompt.
+
+**`SqlValidatorService` — the safety-critical layer, and the one worth
+understanding in depth.**
+This is not a regex/keyword blocklist (`if (sql.includes('DROP'))`) — that
+approach is both too strict (rejects a column literally named `drop_date`)
+and too weak (a keyword can hide inside a string literal, a comment, or a
+subquery a naive scanner doesn't parse into). Instead this parses the SQL
+into an AST with [`node-sql-parser`](https://github.com/taozhi8833998/node-sql-parser)
+and checks structure, not text:
+- Exactly one statement (rejects `SELECT ...; DROP TABLE ...`)
+- `type === 'select'` at the top level
+- `SELECT INTO` explicitly rejected (it's a SELECT that creates a table —
+  easy to miss if you only check `type`)
+- **`parser.tableList()`** walks the *entire* AST — joins, `WHERE IN`
+  subqueries, CTE bodies — and returns every table touched, tagged with the
+  operation performed on it. This one call does double duty: it's how table
+  allowlisting works, and it's a second, independent confirmation that
+  nothing non-`SELECT` is hiding inside a subquery the top-level type check
+  can't see.
+- A `LIMIT` is injected if missing, or clamped down if the model asked for
+  more rows than `MAX_ROW_LIMIT` allows.
+
+The validator's test suite (used during development, not shipped — see the
+build notes if you want to reproduce it) is worth mentioning in an interview:
+safe joins/CTEs/subqueries all pass through correctly, while `DROP`,
+multi-statement injection, `SELECT INTO`, and unlisted tables all get
+rejected — verified empirically against the actual AST shapes, not assumed.
+
+**Read-only Postgres role — the *real* safety boundary.**
+Everything above is defense in depth, and defense in depth means assuming
+each layer can fail. The actual guarantee comes from `DatabaseService`
+provisioning a Postgres role (`sql_chat_readonly`) at boot that is granted
+`SELECT` on exactly the allowed tables and nothing else — no `INSERT`,
+`UPDATE`, `DELETE`, `DDL`, no other tables, no other schemas. `SqlExecutorService`
+holds the *only* connection pool built from that role's credentials; it has
+no way to reach a table outside the grant, full stop, independent of whether
+the validator has a bug. This is the same principle as running a sandboxed
+subprocess with a restricted user instead of trusting your code to "be
+careful" — least privilege at the infrastructure layer beats correctness at
+the application layer, because the infrastructure layer is much smaller and
+easier to get right.
+
+On top of the role grant: every execution runs inside `BEGIN READ ONLY` (a
+second, transaction-level enforcement) with `SET LOCAL statement_timeout`
+per query, so even a legitimate but expensive `SELECT` (an unindexed cross
+join, say) can't hang a connection indefinitely.
+
+**The one-shot retry — "self-healing" generation.**
+If validation rejects the SQL, or Postgres itself returns an error (a typo'd
+column name, say), `SqlChatService` calls the generator *again*, this time
+including the previous attempt and the exact error message in the prompt.
+This is the same pattern used in agentic coding tools: showing a model its
+own error is far more effective than a generic "try again." Capped at one
+retry (`MAX_ATTEMPTS = 2`) so a persistently wrong question fails fast with a
+clear message instead of looping.
+
+**`explain()` — closing the loop.**
+The same grounded-answer pattern as a RAG system: give the model the
+question, the SQL, and the actual result rows, and ask it to answer using
+*only* that data. This is what turns "3 rows, columns: name, total" into
+"Ava Nguyen spent the most at $340.50, followed by...".
+
+## Setup
+
+```bash
+cp .env.example .env
+# fill in ANTHROPIC_API_KEY
+docker compose up --build
+```
+
+This starts Postgres on host port **5433** (not 5432, so it can run
+alongside another local Postgres — e.g. the rag-ai-assistant project — without
+a conflict) and the API on port **3001**. On first boot, `DatabaseService`:
+
+1. Creates the sample schema: `customers`, `products`, `orders`, `order_items`
+   (a classic normalized e-commerce shape — deliberately requires joins to
+   answer most interesting questions, which is the point of a SQL demo)
+2. Seeds it with synthetic data (12 customers, 8 products, 60 orders)
+3. Creates the `sql_chat_readonly` Postgres role and grants it `SELECT` on
+   exactly those four tables
+
+For local dev without Docker: `docker compose up -d postgres`, then
+`npm install && npm run start:dev`.
+
+## API
+
+### Ask a question
+
+```
+POST /chat/query
+Content-Type: application/json
+
+{
+  "question": "Who are the top 5 customers by total spend?",
+  "history": []
+}
+```
+
+Response:
+
+```json
+{
+  "question": "Who are the top 5 customers by total spend?",
+  "sql": "SELECT \"c\".name, SUM(\"oi\".quantity * \"oi\".unit_price) AS total FROM \"customers\" AS \"c\" INNER JOIN \"orders\" AS \"o\" ON \"o\".customer_id = \"c\".id INNER JOIN \"order_items\" AS \"oi\" ON \"oi\".order_id = \"o\".id GROUP BY \"c\".name ORDER BY total DESC LIMIT 5",
+  "tablesUsed": ["customers", "orders", "order_items"],
+  "limitInjected": false,
+  "columns": ["name", "total"],
+  "rows": [ { "name": "Ava Nguyen", "total": "340.50" }, ... ],
+  "rowCount": 5,
+  "explanation": "Ava Nguyen leads with $340.50 in total spend, followed by...",
+  "attempts": 1
+}
+```
+
+`history` is optional — pass back the `question`/`sql` pairs from prior turns
+in the same conversation so a follow-up like *"now just the cancelled ones"*
+has something to anchor to. The server is stateless by design; the client
+owns the conversation.
+
+### Inspect what the model sees
+
+```
+GET /chat/schema
+```
+
+Returns the allowed tables and the exact schema description injected into
+every prompt — useful for debugging a wrong query ("oh, it doesn't know
+`orders` has no `total_amount` column, that's why it tried to invent one").
+
+## Things worth knowing (and good to raise proactively in an interview)
+
+- **This is single-turn stateless by design.** A production chat product
+  would likely persist conversation history server-side and might cache/reuse
+  previous query plans; this keeps the boilerplate's contract simple.
+- **The schema cache never invalidates itself.** Fine here since the schema
+  never changes at runtime; a real app with migrations would need to bust
+  `SchemaService`'s cache on deploy.
+- **Evaluating a text-to-SQL system is its own hard problem** — worth
+  mentioning even though it's out of scope here. Exact string match against
+  a "correct" SQL query is a bad metric (`SELECT a,b FROM t` and
+  `SELECT b,a FROM t` are equally correct); the standard approach is
+  executing both the generated and a reference query and comparing the
+  *result sets*, not the SQL text.
+- **No semantic layer.** A larger system often adds a business-term glossary
+  ("revenue" → `SUM(quantity * unit_price)` from a specific join) so the
+  model doesn't have to reverse-engineer business logic from column names
+  every single time — this measurably improves accuracy on ambiguous
+  questions and is the natural next thing to add.
+- **Data governance**: the schema *and* sampled row data are sent to a
+  third-party model API on every request. For a real deployment with
+  sensitive data, that's a conversation with whoever owns compliance —
+  independent of how good the SQL safety layer is.

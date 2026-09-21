@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sql-ai-chat-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sql_ai_chat
+    ports:
+      # 5433 on the host, not 5432 — lets this run alongside another local
+      # Postgres (e.g. the rag-ai-assistant project) without a port clash.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sql-ai-chat-app
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      ADMIN_DATABASE_URL: postgres://postgres:postgres@postgres:5432/sql_ai_chat
+      READONLY_DATABASE_URL: postgres://sql_chat_readonly:readonly_pw@postgres:5432/sql_ai_chat
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
