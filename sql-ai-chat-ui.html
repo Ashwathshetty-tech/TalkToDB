@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Query Console — sql-ai-chat</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B0F14;
+    --bg-panel: #11161D;
+    --bg-raised: #161D26;
+    --text: #E4E8EC;
+    --text-muted: #8C97A3;
+    --text-faint: #566270;
+    --accent: #4FB7B3;
+    --accent-soft: rgba(79, 183, 179, 0.14);
+    --sql: #E8B04B;
+    --sql-soft: rgba(232, 176, 75, 0.1);
+    --border: #212A34;
+    --border-soft: #1A222B;
+    --error: #E2745C;
+    --error-soft: rgba(226, 116, 92, 0.12);
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SF Mono', Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: var(--font-sans);
+  }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  ::selection { background: var(--accent-soft); }
+  button { font-family: var(--font-sans); cursor: pointer; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+
+  /* ---------- Header ---------- */
+  .header {
+    border-bottom: 1px solid var(--border-soft);
+    padding: 16px 28px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .brand { display: flex; flex-direction: column; margin-right: 8px; }
+  .brand-mark { font-weight: 600; font-size: 15px; margin: 0; }
+  .brand-sub { font-size: 11.5px; color: var(--text-faint); font-family: var(--font-mono); margin: 0; }
+
+  .conn { display: flex; align-items: center; gap: 7px; margin-left: auto; }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); flex-shrink: 0; }
+  .conn-dot.ok { background: var(--accent); }
+  .conn-dot.bad { background: var(--error); }
+  .conn-url {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 8px; width: 180px;
+  }
+
+  .btn-ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+    border-radius: 4px; font-size: 12.5px; padding: 6px 12px;
+    transition: border-color 0.15s ease, color 0.15s ease;
+  }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--text); }
+  .btn-ghost.active { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- Schema drawer ---------- */
+  .schema-drawer {
+    display: none;
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg-panel);
+    padding: 16px 28px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .schema-drawer.open { display: block; }
+  .schema-drawer h3 {
+    font-size: 12px; text-transform: none; color: var(--text-muted);
+    margin: 0 0 8px; font-weight: 500;
+  }
+  .schema-drawer pre {
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+    color: var(--text-muted); white-space: pre-wrap; margin: 0;
+  }
+
+  /* ---------- Thread ---------- */
+  .thread {
+    flex: 1; overflow-y: auto;
+    padding: 24px 28px 12px;
+    display: flex; flex-direction: column; gap: 26px;
+  }
+  .thread-empty {
+    margin: auto; text-align: center; max-width: 420px; color: var(--text-muted);
+  }
+  .thread-empty h2 { font-size: 17px; font-weight: 600; color: var(--text); margin: 0 0 8px; }
+  .thread-empty p { font-size: 13.5px; line-height: 1.6; margin: 0 0 4px; }
+  .thread-empty .examples { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .example-chip {
+    font-family: var(--font-mono); font-size: 12px; color: var(--accent);
+    background: var(--accent-soft); border: 1px solid rgba(79,183,179,0.3);
+    border-radius: 4px; padding: 6px 10px; cursor: pointer;
+  }
+  .example-chip:hover { border-color: var(--accent); }
+
+  .exchange { max-width: 820px; animation: rise 0.3s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .q-row {
+    font-size: 14.5px; color: var(--text); margin-bottom: 12px;
+    display: flex; gap: 8px; font-weight: 500;
+  }
+  .q-row .mark { color: var(--accent); font-family: var(--font-mono); }
+
+  .status-line {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
+    margin-bottom: 10px; font-style: italic;
+  }
+  .status-line.error { color: var(--error); font-style: normal; }
+
+  .sql-block {
+    background: var(--sql-soft);
+    border: 1px solid rgba(232,176,75,0.25);
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .sql-block-label {
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--sql);
+    padding: 8px 14px 0; letter-spacing: 0.02em;
+  }
+  .sql-block pre {
+    margin: 0; padding: 8px 14px 12px;
+    font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+    color: #F0D9A8; white-space: pre-wrap; word-break: break-word;
+  }
+  .sql-meta {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    padding: 0 14px 10px;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+  }
+  .sql-meta span.warn { color: var(--sql); }
+
+  .results-wrap {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: auto;
+    max-height: 320px;
+    margin-bottom: 12px;
+  }
+  table.results { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.results th {
+    position: sticky; top: 0;
+    background: var(--bg-raised);
+    text-align: left; font-weight: 500; color: var(--text-muted);
+    font-family: var(--font-mono); font-size: 11.5px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.results td {
+    padding: 7px 12px; border-bottom: 1px solid var(--border-soft);
+    color: var(--text); white-space: nowrap;
+  }
+  table.results tr:last-child td { border-bottom: none; }
+  .row-count {
+    font-family: var(--font-mono); font-size: 11px; color: var(--text-faint);
+    margin: -6px 0 12px;
+  }
+  .no-rows { padding: 14px; color: var(--text-faint); font-size: 13px; font-style: italic; }
+
+  .explanation {
+    font-size: 14.5px; line-height: 1.65; color: var(--text);
+  }
+
+  .error-box {
+    background: var(--error-soft); border: 1px solid rgba(226,116,92,0.3);
+    border-radius: 6px; padding: 12px 14px; color: var(--error);
+    font-size: 13.5px; line-height: 1.6;
+  }
+
+  /* ---------- Composer ---------- */
+  .composer { border-top: 1px solid var(--border-soft); padding: 16px 28px 22px; }
+  .composer-inner {
+    max-width: 820px; display: flex; gap: 10px; align-items: flex-end;
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 10px 10px 16px;
+  }
+  .composer textarea {
+    flex: 1; background: transparent; border: none; color: var(--text);
+    font-family: var(--font-sans); font-size: 14.5px; line-height: 1.5;
+    resize: none; max-height: 140px; padding: 6px 0;
+  }
+  .composer textarea:focus-visible { outline: none; }
+  .composer textarea::placeholder { color: var(--text-faint); }
+  .send-btn {
+    background: var(--accent); color: #06201E; border: none; border-radius: 6px;
+    width: 38px; height: 38px; font-size: 15px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .send-btn:hover { background: #63C9C5; }
+  .send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .composer-hint {
+    max-width: 820px; font-family: var(--font-mono); font-size: 10.5px;
+    color: var(--text-faint); margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+  <header class="header">
+    <div class="brand">
+      <p class="brand-mark">Query Console</p>
+      <p class="brand-sub">sql-ai-chat</p>
+    </div>
+    <button class="btn-ghost" id="schemaToggle">Schema</button>
+    <div class="conn">
+      <span class="conn-dot" id="connDot"></span>
+      <input class="conn-url" id="apiBase" value="http://localhost:3001" spellcheck="false" />
+    </div>
+  </header>
+
+  <div class="schema-drawer" id="schemaDrawer">
+    <h3>What the model sees (GET /chat/schema)</h3>
+    <pre id="schemaText">Loading…</pre>
+  </div>
+
+  <div class="thread" id="thread">
+    <div class="thread-empty" id="threadEmpty">
+      <h2>Ask your data a question</h2>
+      <p>Answers are generated as SQL, validated, run read-only against the sample dataset, then explained in plain English.</p>
+      <div class="examples">
+        <button class="example-chip" data-q="Who are the top 5 customers by total spend?">Who are the top 5 customers by total spend?</button>
+        <button class="example-chip" data-q="Which product category has sold the most units?">Which product category has sold the most units?</button>
+        <button class="example-chip" data-q="How many orders were cancelled in the last 30 days?">How many orders were cancelled in the last 30 days?</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="composer">
+    <div class="composer-inner">
+      <textarea id="questionInput" placeholder="Ask a question about customers, products, orders…" rows="1"></textarea>
+      <button class="send-btn" id="sendBtn" aria-label="Ask">↑</button>
+    </div>
+    <p class="composer-hint">Prior Q&amp;A pairs in this session are sent as context for follow-up questions.</p>
+  </div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const apiBaseInput = $('apiBase');
+  const connDot = $('connDot');
+  const schemaToggle = $('schemaToggle');
+  const schemaDrawer = $('schemaDrawer');
+  const schemaText = $('schemaText');
+  const thread = $('thread');
+  const threadEmpty = $('threadEmpty');
+  const questionInput = $('questionInput');
+  const sendBtn = $('sendBtn');
+
+  let history = []; // { question, sql } pairs from successful exchanges
+  let schemaLoaded = false;
+
+  function apiBase() {
+    return apiBaseInput.value.trim().replace(/\/$/, '');
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(apiBase() + path, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...options.headers },
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body.message || detail;
+      } catch (_) {}
+      throw new Error(Array.isArray(detail) ? detail.join(', ') : detail);
+    }
+    return res.json();
+  }
+
+  async function checkConnection() {
+    try {
+      await api('/chat/schema');
+      connDot.className = 'conn-dot ok';
+      return true;
+    } catch (_) {
+      connDot.className = 'conn-dot bad';
+      return false;
+    }
+  }
+
+  async function loadSchema() {
+    try {
+      const data = await api('/chat/schema');
+      schemaText.textContent = `Allowed tables: ${data.allowedTables.join(', ')}\n\n${data.description}`;
+      schemaLoaded = true;
+      connDot.className = 'conn-dot ok';
+    } catch (err) {
+      schemaText.textContent = `Can't reach the API at ${apiBase()}: ${err.message}`;
+      connDot.className = 'conn-dot bad';
+    }
+  }
+
+  schemaToggle.addEventListener('click', () => {
+    schemaDrawer.classList.toggle('open');
+    schemaToggle.classList.toggle('active');
+    if (schemaDrawer.classList.contains('open') && !schemaLoaded) loadSchema();
+  });
+
+  apiBaseInput.addEventListener('change', () => {
+    schemaLoaded = false;
+    checkConnection();
+    if (schemaDrawer.classList.contains('open')) loadSchema();
+  });
+
+  function autoGrow(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 140) + 'px';
+  }
+  questionInput.addEventListener('input', () => autoGrow(questionInput));
+
+  function addExchange(question) {
+    threadEmpty.remove();
+    const el = document.createElement('div');
+    el.className = 'exchange';
+    el.innerHTML = `
+      <div class="q-row"><span class="mark">›</span> ${escapeHtml(question)}</div>
+      <div class="status-line">Generating SQL, validating, and running it…</div>
+    `;
+    thread.appendChild(el);
+    thread.scrollTop = thread.scrollHeight;
+    return el;
+  }
+
+  function renderTable(columns, rows) {
+    if (!columns.length || !rows.length) {
+      return '<div class="results-wrap"><div class="no-rows">No rows returned.</div></div>';
+    }
+    const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join('');
+    const body = rows
+      .map(
+        (row) =>
+          `<tr>${columns.map((c) => `<td>${escapeHtml(row[c])}</td>`).join('')}</tr>`,
+      )
+      .join('');
+    return `<div class="results-wrap"><table class="results"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
+  function renderResult(el, result) {
+    el.querySelector('.status-line').remove();
+
+    if (result.failed) {
+      el.insertAdjacentHTML(
+        'beforeend',
+        `<div class="error-box">${escapeHtml(result.explanation)}</div>`,
+      );
+      return;
+    }
+
+    const meta = [
+      `${result.tablesUsed.join(', ') || 'no tables'}`,
+      result.limitInjected ? '<span class="warn">limit added</span>' : null,
+      result.attempts > 1 ? `<span class="warn">${result.attempts} attempts</span>` : null,
+    ].filter(Boolean).join(' · ');
+
+    el.insertAdjacentHTML('beforeend', `
+      <div class="sql-block">
+        <div class="sql-block-label">GENERATED SQL</div>
+        <pre>${escapeHtml(result.sql)}</pre>
+        <div class="sql-meta">${meta}</div>
+      </div>
+      <div class="row-count">${result.rowCount} row${result.rowCount === 1 ? '' : 's'}</div>
+      ${renderTable(result.columns, result.rows)}
+      <div class="explanation">${escapeHtml(result.explanation)}</div>
+    `);
+
+    history.push({ question: result.question, sql: result.sql });
+  }
+
+  function renderError(el, message) {
+    el.querySelector('.status-line').remove();
+    el.insertAdjacentHTML(
+      'beforeend',
+      `<div class="error-box">Couldn't reach the API: ${escapeHtml(message)}</div>`,
+    );
+  }
+
+  async function ask() {
+    const question = questionInput.value.trim();
+    if (!question) return;
+
+    questionInput.value = '';
+    autoGrow(questionInput);
+    sendBtn.disabled = true;
+
+    const el = addExchange(question);
+
+    try {
+      const result = await api('/chat/query', {
+        method: 'POST',
+        body: JSON.stringify({ question, history }),
+      });
+      renderResult(el, result);
+    } catch (err) {
+      renderError(el, err.message);
+    } finally {
+      sendBtn.disabled = false;
+      thread.scrollTop = thread.scrollHeight;
+    }
+  }
+
+  sendBtn.addEventListener('click', ask);
+  questionInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      ask();
+    }
+  });
+
+  document.querySelectorAll('.example-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      questionInput.value = chip.dataset.q;
+      autoGrow(questionInput);
+      ask();
+    });
+  });
+
+  checkConnection();
+})();
+</script>
+
+</body>
+</html>
