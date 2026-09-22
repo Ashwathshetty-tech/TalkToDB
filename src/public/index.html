@@ -224,7 +224,7 @@
     <button class="btn-ghost" id="schemaToggle">Schema</button>
     <div class="conn">
       <span class="conn-dot" id="connDot"></span>
-      <input class="conn-url" id="apiBase" value="http://localhost:3001" spellcheck="false" />
+      <input class="conn-url" id="apiBase" spellcheck="false" />
     </div>
   </header>
 
@@ -257,6 +257,14 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const apiBaseInput = $('apiBase');
+  // Served from the Nest app itself (same origin) → default to that origin,
+  // so this works unmodified both locally and once deployed. If someone
+  // instead opens this file directly (file://), fall back to the local dev
+  // API port, matching how this file could also be used standalone.
+  apiBaseInput.value =
+    location.protocol === 'http:' || location.protocol === 'https:'
+      ? location.origin
+      : 'http://localhost:3001';
   const connDot = $('connDot');
   const schemaToggle = $('schemaToggle');
   const schemaDrawer = $('schemaDrawer');

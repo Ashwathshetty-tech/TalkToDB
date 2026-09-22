@@ -267,15 +267,43 @@ Supabase, or Prisma Postgres.
    double-seeding data, a real scenario on serverless that a single always-
    on Docker container never has to worry about. Subsequent requests hit
    the warm instance and skip all of that.
-5. **Point the UI at your deployed URL.** Open `sql-ai-chat-ui.html`
-   locally and change the API base field from `http://localhost:3001` to
-   your `https://your-project.vercel.app` — `app.enableCors()` in `main.ts`
-   already allows this with no extra config.
+5. **Open your deployed URL.** The UI is served by the app itself now
+   (`src/public/index.html`, via `@nestjs/serve-static` — see below), so
+   `https://your-project.vercel.app/` shows the query console directly. It
+   defaults its API base to `window.location.origin`, so nothing needs
+   editing after deploy.
 
 The Hobby (free) plan is personal/non-commercial only, but has no meaningful
 constraint left for this app specifically: function duration defaults to
 300 seconds (plenty for a slow Claude call) and the free tier includes 1M
 function invocations/month.
+
+## One deployment, one URL: how the UI is served
+
+`src/public/index.html` is the query console, served directly by the Nest
+app itself via `@nestjs/serve-static`, wired in `app.module.ts` with
+`exclude: ['/chat/(.*)']` so API routes still reach `SqlChatController`
+while everything else falls through to the static file. This means `/`
+shows the UI and `/chat/query` is the API, both from one process, one port,
+one Vercel deployment — no separate frontend project or CORS dance needed.
+
+Two build details worth knowing if you touch this:
+
+- **The build script explicitly copies the file**: `"build": "nest build &&
+  cp -r src/public dist/public"` in `package.json`. `nest-cli.json` has an
+  `assets` config for exactly this purpose, but it didn't reliably copy
+  non-`.ts` files in this Nest CLI version's default (non-webpack) build
+  mode — worth knowing as a general lesson: a config option existing and
+  being documented doesn't mean it's doing what you think, so this was
+  verified with an actual HTTP request against the compiled output (`GET /`
+  returns 200 with the real HTML, `GET /chat/schema` still reaches the
+  controller) rather than trusting the build logs alone.
+- **`tsconfig.json` pins `rootDir: "./src"`** and excludes `test/` from the
+  compile. Without this, TypeScript's root-directory inference (based on
+  the common ancestor of *all* compiled files, including `test/`) nests
+  output an extra level deep (`dist/src/main.js` instead of `dist/main.js`),
+  which silently breaks the `join(__dirname, 'public')` path math in
+  `app.module.ts`.
 
 ## API
 
