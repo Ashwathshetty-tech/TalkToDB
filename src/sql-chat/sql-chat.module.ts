@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SchemaModule } from '../schema/schema.module';
+import { JevModule } from '../jev/jev.module';
 import { SqlChatController } from './sql-chat.controller';
 import { SqlChatService } from './sql-chat.service';
 import { SqlGeneratorService } from './sql-generator.service';
@@ -8,7 +9,7 @@ import { SqlExecutorService } from './sql-executor.service';
 import { LlmProvider } from '../providers/llm.provider';
 
 @Module({
-  imports: [SchemaModule],
+  imports: [SchemaModule, JevModule],
   controllers: [SqlChatController],
   providers: [
     SqlChatService,

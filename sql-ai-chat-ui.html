@@ -363,8 +363,23 @@
     return `<div class="results-wrap"><table class="results"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
+  function renderGateBadge(gate) {
+    if (!gate) return '';
+    const inPct = Math.round(gate.inScopeProbability * 100);
+    const injPct = Math.round(gate.injectionProbability * 100);
+    return `<div class="sql-meta" style="padding:0 0 10px;">jev: in-scope ${inPct}% · injection-risk ${injPct}%</div>`;
+  }
+
   function renderResult(el, result) {
     el.querySelector('.status-line').remove();
+
+    if (result.skippedGeneration) {
+      el.insertAdjacentHTML(
+        'beforeend',
+        `${renderGateBadge(result.gate)}<div class="error-box" style="background:var(--accent-soft); border-color:rgba(79,183,179,0.3); color:var(--text);">${escapeHtml(result.explanation)}</div>`,
+      );
+      return;
+    }
 
     if (result.failed) {
       el.insertAdjacentHTML(
@@ -381,6 +396,7 @@
     ].filter(Boolean).join(' · ');
 
     el.insertAdjacentHTML('beforeend', `
+      ${renderGateBadge(result.gate)}
       <div class="sql-block">
         <div class="sql-block-label">GENERATED SQL</div>
         <pre>${escapeHtml(result.sql)}</pre>

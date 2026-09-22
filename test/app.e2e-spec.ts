@@ -1,7 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { Response } from 'supertest';
 import { AppModule } from '../src/app.module';
 
 describe('AppModule (e2e)', () => {
@@ -24,7 +23,7 @@ describe('AppModule (e2e)', () => {
     return request(app.getHttpServer())
       .get('/chat/schema')
       .expect(200)
-      .expect((res: Response) => {
+      .expect((res) => {
         expect(Array.isArray(res.body.allowedTables)).toBe(true);
         expect(typeof res.body.description).toBe('string');
       });

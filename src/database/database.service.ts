@@ -244,9 +244,10 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private async ensureReadonlyRole() {
     const password = this.configService.get<string>('READONLY_DB_PASSWORD');
     if (!password) {
-      throw new Error('READONLY_DB_PASSWORD is not configured');
+      throw new Error(
+        'READONLY_DB_PASSWORD is not set — required to provision the read-only role.',
+      );
     }
-
     const escapedPassword = password.replace(/'/g, "''");
 
     const { rows } = await this.adminPool.query(

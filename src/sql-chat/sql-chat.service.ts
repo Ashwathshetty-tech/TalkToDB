@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
 import { SchemaService } from '../schema/schema.service';
 import { LlmProvider } from '../providers/llm.provider';
+import { JevGateService } from '../jev/jev-gate.service';
 import { SqlGeneratorService } from './sql-generator.service';
 import { SqlValidatorService } from './sql-validator.service';
 import { SqlExecutorService } from './sql-executor.service';
@@ -19,6 +20,11 @@ export interface SqlChatResult {
   explanation: string;
   attempts: number;
   failed?: boolean;
+  skippedGeneration?: boolean;
+  gate?: {
+    inScopeProbability: number;
+    injectionProbability: number;
+  };
 }
 
 const MAX_ATTEMPTS = 2; // one generation + one self-correcting retry
@@ -36,6 +42,7 @@ export class SqlChatService {
     private readonly validator: SqlValidatorService,
     private readonly executor: SqlExecutorService,
     private readonly llmProvider: LlmProvider,
+    private readonly jevGate: JevGateService,
     configService: ConfigService,
   ) {
     this.defaultLimit = Number(
@@ -47,6 +54,48 @@ export class SqlChatService {
   async ask(dto: QueryDto): Promise<SqlChatResult> {
     const allowedTables = this.databaseService.getAllowedTables();
     const schemaDescription = await this.schemaService.getSchemaDescription();
+
+    const gate = await this.jevGate.classify(dto.question, allowedTables);
+    const gateInfo = gate.skipped
+      ? undefined
+      : {
+          inScopeProbability: gate.inScopeProbability,
+          injectionProbability: gate.injectionProbability,
+        };
+
+    if (!gate.skipped && gate.outOfScope) {
+      return {
+        question: dto.question,
+        sql: '',
+        tablesUsed: [],
+        limitInjected: false,
+        columns: [],
+        rows: [],
+        rowCount: 0,
+        explanation:
+          "That doesn't look like a question about this dataset (customers, products, orders). I can only answer questions grounded in those tables.",
+        attempts: 0,
+        skippedGeneration: true,
+        gate: gateInfo,
+      };
+    }
+
+    if (!gate.skipped && gate.flaggedAsInjection) {
+      return {
+        question: dto.question,
+        sql: '',
+        tablesUsed: [],
+        limitInjected: false,
+        columns: [],
+        rows: [],
+        rowCount: 0,
+        explanation:
+          "This looks like it's asking for something other than a read-only data question (e.g. modifying data or overriding instructions), so I didn't generate a query. If this was a genuine question, try rephrasing it.",
+        attempts: 0,
+        skippedGeneration: true,
+        gate: gateInfo,
+      };
+    }
 
     let previousSql: string | undefined;
     let lastError: string | undefined;
@@ -105,6 +154,7 @@ export class SqlChatService {
           rowCount: result.rowCount,
           explanation,
           attempts: attempt,
+          gate: gateInfo,
         };
       } catch (err) {
         previousSql = safeSql;
