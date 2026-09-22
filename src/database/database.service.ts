@@ -61,10 +61,33 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       .filter(Boolean);
   }
 
+  // Arbitrary fixed key for the advisory lock below — any bigint works, it
+  // just needs to be the same constant every time this code runs.
+  private static readonly BOOT_LOCK_KEY = 727277001;
+
   async onModuleInit() {
-    await this.ensureSchema();
-    await this.seedIfEmpty();
-    await this.ensureReadonlyRole();
+    // On a long-lived process (plain Docker/Node) this only ever runs once,
+    // so there's nothing to coordinate. On serverless platforms with warm-
+    // instance reuse (e.g. Vercel Fluid compute), multiple cold starts CAN
+    // run onModuleInit concurrently the first time traffic arrives — a
+    // Postgres session-scoped advisory lock makes the whole schema/seed/
+    // role sequence a critical section across processes, not just within
+    // one, so only one cold start does the provisioning work and the rest
+    // wait, then find it already done.
+    const client = await this.adminPool.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [
+        DatabaseService.BOOT_LOCK_KEY,
+      ]);
+      await this.ensureSchema();
+      await this.seedIfEmpty();
+      await this.ensureReadonlyRole();
+    } finally {
+      await client
+        .query('SELECT pg_advisory_unlock($1)', [DatabaseService.BOOT_LOCK_KEY])
+        .catch(() => undefined);
+      client.release();
+    }
   }
 
   async onModuleDestroy() {
@@ -255,10 +278,27 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     );
 
     if (rows.length === 0) {
-      await this.adminPool.query(
-        `CREATE ROLE sql_chat_readonly LOGIN PASSWORD '${escapedPassword}'`,
-      );
-      this.logger.log('Created read-only role sql_chat_readonly');
+      try {
+        await this.adminPool.query(
+          `CREATE ROLE sql_chat_readonly LOGIN PASSWORD '${escapedPassword}'`,
+        );
+        this.logger.log('Created read-only role sql_chat_readonly');
+      } catch (err) {
+        // 42710 = duplicate_object. On a platform that reuses one long-lived
+        // process (plain Docker/Node) this check-then-create race can't
+        // actually happen — there's only ever one process reaching this
+        // code at boot. On serverless (e.g. Vercel Fluid compute), multiple
+        // cold starts CAN run this concurrently on first deploy, and both
+        // can pass the SELECT above before either finishes CREATE ROLE.
+        // Treat "someone else already created it" as success rather than
+        // crashing this cold start's boot.
+        if ((err as { code?: string }).code !== '42710') {
+          throw err;
+        }
+        this.logger.log(
+          'sql_chat_readonly already created by a concurrent boot — continuing',
+        );
+      }
     }
 
     await this.adminPool.query(

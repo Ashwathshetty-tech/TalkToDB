@@ -221,6 +221,62 @@ a conflict) and the API on port **3001**. On first boot, `DatabaseService`:
 For local dev without Docker: `docker compose up -d postgres`, then
 `npm install && npm run start:dev`.
 
+## Deploying to Vercel (free)
+
+Vercel added zero-config NestJS support in 2026: it deploys your existing
+`main.ts` (with `app.listen()`, unchanged) as a single "Fluid compute"
+function that reuses a warm instance across requests — which is exactly why
+`DatabaseService` keeping its two `pg.Pool`s open at module scope is the
+*right* pattern here, not an anti-pattern. No Express-adapter rewrite, no
+code restructuring needed.
+
+What actually needs to change is the database — Vercel doesn't host
+Postgres itself (that was discontinued; it's now Marketplace-only). Free,
+serverless-friendly options include **Neon** (recommended — has a generous
+free tier, scale-to-zero, and is one click from the Vercel dashboard),
+Supabase, or Prisma Postgres.
+
+1. **Provision Postgres.** From your Vercel project → Storage → Marketplace,
+   add Neon (or go directly to neon.tech). Note the connection string it
+   gives you — use the **pooled** variant (has `-pooler` in the hostname);
+   Fluid compute's warm-instance reuse means a small `pg.Pool` per instance
+   works fine here, but pooled is still the safer default under bursty
+   concurrent cold starts.
+2. **Set environment variables** in your Vercel project settings
+   (Settings → Environment Variables) — everything from `.env.example`:
+   - `ADMIN_DATABASE_URL` — the pooled connection string from step 1, using
+     Neon's default admin role
+   - `READONLY_DB_PASSWORD` — pick a strong password; this is what
+     `ensureReadonlyRole()` uses when it creates `sql_chat_readonly` on
+     first boot
+   - `READONLY_DATABASE_URL` — same host/port/database as above, but with
+     user `sql_chat_readonly` and the password from the line above (it
+     doesn't exist as a role yet — that's fine, `DatabaseService` creates it
+     the first time the app boots)
+   - `ANTHROPIC_API_KEY`, `ALLOWED_TABLES`, `DEFAULT_ROW_LIMIT`,
+     `MAX_ROW_LIMIT`, `QUERY_TIMEOUT_MS` — same as local
+   - `JEV_*` — optional, same as local
+3. **Push to a Git repo** (GitHub/GitLab/Bitbucket) and import it at
+   [vercel.com/new](https://vercel.com/new) — Vercel detects NestJS
+   automatically. Or skip Git entirely: `npm i -g vercel`, then `vercel`
+   from the project root for a preview deploy, `vercel --prod` to go live.
+4. **First request after each deploy will be slower.** `onModuleInit` runs
+   schema creation, seeding, and role provisioning on cold start — wrapped
+   in a Postgres advisory lock (`pg_advisory_lock`) so concurrent cold
+   starts on Vercel can't race each other into creating the role twice or
+   double-seeding data, a real scenario on serverless that a single always-
+   on Docker container never has to worry about. Subsequent requests hit
+   the warm instance and skip all of that.
+5. **Point the UI at your deployed URL.** Open `sql-ai-chat-ui.html`
+   locally and change the API base field from `http://localhost:3001` to
+   your `https://your-project.vercel.app` — `app.enableCors()` in `main.ts`
+   already allows this with no extra config.
+
+The Hobby (free) plan is personal/non-commercial only, but has no meaningful
+constraint left for this app specifically: function duration defaults to
+300 seconds (plenty for a slow Claude call) and the free tier includes 1M
+function invocations/month.
+
 ## API
 
 ### Ask a question

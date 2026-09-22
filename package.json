@@ -4,6 +4,9 @@
   "description": "Ask a database questions in plain English. NestJS + Postgres + Claude API, with schema-grounded generation and AST-validated, read-only execution.",
   "author": "",
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
